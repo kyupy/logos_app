@@ -1,6 +1,7 @@
 // lib/widgets/drawing_canvas.dart
 
 import 'dart:ui';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:logos_app/models/drawing_tool.dart';
 import 'package:logos_app/models/stroke.dart';
@@ -78,12 +79,17 @@ class DrawingCanvas extends StatefulWidget {
   final DrawingTool currentTool;
   final Function(List<Stroke>) onStrokesUpdated;
   final List<Stroke> initialStrokes;
+  final bool stylusOnlyDrawing;
+  // ★★★ 描画状態を親に通知するコールバック ★★★
+  final Function(bool) onDrawingStateChanged;
 
   const DrawingCanvas({
     super.key,
     required this.currentTool,
     required this.onStrokesUpdated,
     required this.initialStrokes,
+    required this.stylusOnlyDrawing,
+    required this.onDrawingStateChanged,
   });
 
   @override
@@ -94,6 +100,9 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
   late List<Stroke> _finishedStrokes;
   Stroke? _currentStroke;
   Offset? _eraserPosition;
+  
+  // ★★★ アクティブなポインターの数を管理する ★★★
+  int _activePointerCount = 0;
 
   @override
   void initState() {
@@ -130,62 +139,106 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
       widget.onStrokesUpdated(List<Stroke>.from(_finishedStrokes));
     }
   }
+  
+  void _startDrawing(Offset localPosition, PointerDeviceKind kind) {
+    // 描画を開始する条件
+    final bool isStylus = kind == PointerDeviceKind.stylus;
+    final bool canDrawWithTouch = !widget.stylusOnlyDrawing && kind == PointerDeviceKind.touch;
 
-  @override
-  Widget build(BuildContext context) {
-    if (widget.currentTool == DrawingTool.pen) {
-      return _buildPenDetector();
-    } else {
-      return _buildEraserDetector();
+    if (isStylus || canDrawWithTouch) {
+      // 親ウィジェットに描画が開始したことを通知
+      widget.onDrawingStateChanged(true);
+      switch (widget.currentTool) {
+        case DrawingTool.pen:
+          final points = [_mapOffsetToPoint(localPosition)];
+          setState(() => _currentStroke = Stroke(points));
+          break;
+        case DrawingTool.eraser:
+          setState(() => _eraserPosition = localPosition);
+          _handleErase(localPosition);
+          break;
+      }
     }
   }
 
-  Widget _buildPenDetector() {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onPanStart: (details) {
-        final points = [_mapOffsetToPoint(details.localPosition)];
-        setState(() => _currentStroke = Stroke(points));
-      },
-      onPanUpdate: (details) {
+  void _updateDrawing(Offset localPosition) {
+    switch (widget.currentTool) {
+      case DrawingTool.pen:
         if (_currentStroke == null) return;
-        final points = List<Point>.from(_currentStroke!.points)..add(_mapOffsetToPoint(details.localPosition));
+        final points = List<Point>.from(_currentStroke!.points)
+          ..add(_mapOffsetToPoint(localPosition));
         setState(() => _currentStroke = Stroke(points));
-      },
-      onPanEnd: (details) {
-        if (_currentStroke != null) {
+        break;
+      case DrawingTool.eraser:
+        setState(() => _eraserPosition = localPosition);
+        _handleErase(localPosition);
+        break;
+    }
+  }
+
+  void _endDrawing() {
+    // 親ウィジェットに描画が終了したことを通知
+    widget.onDrawingStateChanged(false);
+    switch (widget.currentTool) {
+      case DrawingTool.pen:
+         if (_currentStroke != null) {
           _finishedStrokes.add(_currentStroke!);
-          _currentStroke = null;
           widget.onStrokesUpdated(List<Stroke>.from(_finishedStrokes));
-          setState(() {});
+        }
+        break;
+      case DrawingTool.eraser:
+        // 何もする必要なし
+        break;
+    }
+    setState(() {
+      _currentStroke = null;
+      _eraserPosition = null;
+    });
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: (details) {
+        _activePointerCount++;
+        // 2本指以上が触れたら、移動・拡大モードに移行するため描画をキャンセル
+        if (_activePointerCount > 1) {
+          if (_currentStroke != null || _eraserPosition != null) {
+            _endDrawing();
+          }
+          return;
+        }
+        // 指が1本の時のみ描画を開始する
+        _startDrawing(details.localPosition, details.kind);
+      },
+      onPointerMove: (details) {
+        // 描画中で、かつ指が1本だけの時のみ更新
+        if ((_currentStroke != null || _eraserPosition != null) && _activePointerCount == 1) {
+          _updateDrawing(details.localPosition);
+        }
+      },
+      onPointerUp: (details) {
+        if (_activePointerCount > 0) {
+            _activePointerCount--;
+        }
+        // 描画中であった場合は終了処理
+        if (_currentStroke != null || _eraserPosition != null) {
+            _endDrawing();
+        }
+      },
+      onPointerCancel: (details) {
+        if (_activePointerCount > 0) {
+            _activePointerCount--;
+        }
+        // 描画中であった場合は終了処理
+        if (_currentStroke != null || _eraserPosition != null) {
+            _endDrawing();
         }
       },
       child: CustomPaint(
         painter: DrawingPainter(
           strokes: [..._finishedStrokes, if (_currentStroke != null) _currentStroke!],
-        ),
-        size: Size.infinite,
-      ),
-    );
-  }
-
-  Widget _buildEraserDetector() {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onPanStart: (details) {
-        setState(() => _eraserPosition = details.localPosition);
-        _handleErase(details.localPosition);
-      },
-      onPanUpdate: (details) {
-        setState(() => _eraserPosition = details.localPosition);
-        _handleErase(details.localPosition);
-      },
-      onPanEnd: (details) {
-        setState(() => _eraserPosition = null);
-      },
-      child: CustomPaint(
-        painter: DrawingPainter(
-          strokes: _finishedStrokes,
           eraserPosition: _eraserPosition,
         ),
         size: Size.infinite,

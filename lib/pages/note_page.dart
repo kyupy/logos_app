@@ -17,34 +17,97 @@ class NotePage extends StatefulWidget {
   State<NotePage> createState() => _NotePageState();
 }
 
-class _NotePageState extends State<NotePage> {
-  // --- 状態管理 (サイズ管理の変数を削除) ---
+class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin {
+  // --- 状態管理 ---
   DrawingTool _currentTool = DrawingTool.pen;
   final Box<NoteData> _notesBox = Hive.box<NoteData>('notes_box');
   NoteData? _currentNote;
   int _currentPageIndex = 0;
   bool _isLoading = true;
 
+  bool _stylusOnlyDrawing = true;
+  bool _isDrawingOnCanvas = false;
+
+  late PageController _pageController;
+  final TransformationController _transformationController = TransformationController();
+  final Box _settingsBox = Hive.box('settings_box');
+
+  late AnimationController _animationController;
+  Animation<Matrix4>? _animation;
+
   @override
   void initState() {
     super.initState();
-    _loadNote();
+    _stylusOnlyDrawing = _settingsBox.get('stylusOnlyDrawing', defaultValue: true);
+    _settingsBox.listenable(keys: ['stylusOnlyDrawing']).addListener(_onSettingsChanged);
+    
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
+    );
+
+    _loadNote().then((_) {
+      if (!mounted) return;
+      if (_currentNote != null) {
+        _pageController = PageController(initialPage: _currentNote!.lastOpenedPageIndex);
+      }
+      setState(() => _isLoading = false);
+    });
   }
 
-  // --- データ操作 ---
+  @override
+  void dispose() {
+    _settingsBox.listenable(keys: ['stylusOnlyDrawing']).removeListener(_onSettingsChanged);
+    _animationController.dispose();
+    if (mounted) {
+      _pageController.dispose();
+    }
+    _transformationController.dispose();
+    super.dispose();
+  }
+  
+  void _onSettingsChanged() {
+    if (!mounted) return;
+    setState(() {
+      _stylusOnlyDrawing = _settingsBox.get('stylusOnlyDrawing', defaultValue: true);
+    });
+  }
+  
+  void _onInteractionEnd(ScaleEndDetails details) {
+    final Matrix4 matrix = _transformationController.value.clone();
+    final double currentScale = matrix.getMaxScaleOnAxis();
+
+    if (currentScale < 1.0) {
+      _runAnimation(Matrix4.identity());
+      return;
+    }
+  }
+
+  void _runAnimation(Matrix4 targetMatrix) {
+    _animation = Matrix4Tween(
+      begin: _transformationController.value,
+      end: targetMatrix,
+    ).animate(
+      CurveTween(curve: Curves.easeOut).animate(_animationController),
+    );
+    _animation!.addListener(() {
+      if (mounted) {
+        _transformationController.value = _animation!.value;
+      }
+    });
+    _animationController.forward(from: 0);
+  }
+
   Future<void> _loadNote() async {
     final note = _notesBox.get(widget.noteKey);
     if (mounted) {
-      setState(() {
-        _currentNote = note;
-        if (_currentNote != null) {
-          _currentPageIndex = _currentNote!.lastOpenedPageIndex;
-          if (_currentPageIndex >= _currentNote!.pages.length || _currentPageIndex < 0) {
-            _currentPageIndex = 0;
-          }
+      _currentNote = note;
+      if (_currentNote != null) {
+        _currentPageIndex = _currentNote!.lastOpenedPageIndex;
+        if (_currentPageIndex >= _currentNote!.pages.length || _currentPageIndex < 0) {
+          _currentPageIndex = 0;
         }
-        _isLoading = false;
-      });
+      }
     }
   }
 
@@ -55,31 +118,25 @@ class _NotePageState extends State<NotePage> {
     }
   }
 
-  // --- ページ操作 ---
   void _addNewPage() {
     if (_currentNote == null) return;
+    final newPageIndex = _currentNote!.pages.length;
     setState(() {
       _currentNote!.pages.add(PageData(strokes: []));
-      _currentPageIndex = _currentNote!.pages.length - 1;
+    });
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _pageController.animateToPage(
+          newPageIndex,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     });
     _saveNote();
   }
-
-  void _goToPreviousPage() {
-    if (_currentPageIndex > 0) {
-      setState(() => _currentPageIndex--);
-      _saveNote();
-    }
-  }
-
-  void _goToNextPage() {
-    if (_currentNote != null && _currentPageIndex < _currentNote!.pages.length - 1) {
-      setState(() => _currentPageIndex++);
-      _saveNote();
-    }
-  }
-
-  // --- データ変換ヘルパー (strokeWidthの処理を削除) ---
+  
   List<StrokeData> _convertStrokesToStrokeData(List<Stroke> strokes) {
     return strokes.map((stroke) {
       final points = stroke.points.map((point) => NotePointData(x: point.x, y: point.y, pressure: point.pressure)).toList();
@@ -93,6 +150,7 @@ class _NotePageState extends State<NotePage> {
       return Stroke(points);
     }).toList();
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -113,6 +171,7 @@ class _NotePageState extends State<NotePage> {
     }
 
     return CupertinoPageScaffold(
+      backgroundColor: CupertinoColors.systemGroupedBackground,
       navigationBar: CupertinoNavigationBar(
         previousPageTitle: 'Notes',
         middle: Text(_currentNote?.title ?? '無題のノート'),
@@ -132,74 +191,86 @@ class _NotePageState extends State<NotePage> {
           ],
         ),
       ),
-      child: Column(
-        children: [
-          Expanded(
-            child: Container(
-              alignment: Alignment.topCenter,
-              child: AspectRatio(
-                aspectRatio: 1 / 1.414,
+      // ★★★ 必須引数であるchildに戻す ★★★
+      child: PageView.builder(
+        controller: _pageController,
+        physics: _isDrawingOnCanvas ? const NeverScrollableScrollPhysics() : const AlwaysScrollableScrollPhysics(),
+        itemCount: _currentNote!.pages.length + 1,
+        onPageChanged: (index) {
+          if (index == _currentNote!.pages.length) {
+            _addNewPage();
+          } else {
+            setState(() {
+              _currentPageIndex = index;
+            });
+            _transformationController.value = Matrix4.identity();
+          }
+        },
+        itemBuilder: (context, index) {
+          if (index == _currentNote!.pages.length) {
+             return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(CupertinoIcons.plus_app, size: 50, color: CupertinoColors.secondaryLabel),
+                  SizedBox(height: 16),
+                  Text('スワイプして新規ページを追加', style: TextStyle(color: CupertinoColors.secondaryLabel)),
+                ],
+              ),
+            );
+          }
+          
+          const double paperWidth = 600.0;
+          const double paperHeight = paperWidth * 1.414;
+
+          return InteractiveViewer(
+            transformationController: _transformationController,
+            boundaryMargin: const EdgeInsets.all(double.infinity),
+            minScale: 0.1, 
+            maxScale: 4.0,
+            panEnabled: !_isDrawingOnCanvas,
+            scaleEnabled: !_isDrawingOnCanvas,
+            onInteractionEnd: _onInteractionEnd,
+            child: FittedBox(
+              fit: BoxFit.contain,
+              child: SizedBox(
+                width: paperWidth,
+                height: paperHeight,
                 child: Container(
-                  margin: const EdgeInsets.all(16.0),
+                  clipBehavior: Clip.hardEdge,
                   decoration: BoxDecoration(
                     color: Colors.white,
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 10,
+                        color: Colors.black.withOpacity(0.2),
+                        blurRadius: 12,
                         offset: const Offset(0, 4),
                       )
                     ],
                   ),
                   child: DrawingCanvas(
                     currentTool: _currentTool,
-                    initialStrokes: _convertPageDataToStrokes(_currentNote!.pages[_currentPageIndex]),
+                    stylusOnlyDrawing: _stylusOnlyDrawing,
+                    initialStrokes: _convertPageDataToStrokes(_currentNote!.pages[index]),
                     onStrokesUpdated: (updatedStrokes) {
-                      if (_currentNote == null) return;
-                      _currentNote!.pages[_currentPageIndex].strokes = _convertStrokesToStrokeData(updatedStrokes);
+                      if (_currentNote == null || index >= _currentNote!.pages.length) return;
+                      _currentNote!.pages[index].strokes = _convertStrokesToStrokeData(updatedStrokes);
                       _saveNote();
                       if (mounted) setState(() {});
+                    },
+                    onDrawingStateChanged: (isDrawing) {
+                      if (_isDrawingOnCanvas != isDrawing) {
+                        setState(() {
+                          _isDrawingOnCanvas = isDrawing;
+                        });
+                      }
                     },
                   ),
                 ),
               ),
             ),
-          ),
-          _buildPageControlBar(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPageControlBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-      color: CupertinoTheme.of(context).barBackgroundColor.withOpacity(0.8),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            CupertinoButton(
-              onPressed: _goToPreviousPage,
-              child: const Icon(CupertinoIcons.chevron_back),
-            ),
-            if (_currentNote != null)
-              Text(
-                '${_currentPageIndex + 1} / ${_currentNote!.pages.length}',
-                style: CupertinoTheme.of(context).textTheme.textStyle,
-              ),
-            CupertinoButton(
-              onPressed: _goToNextPage,
-              child: const Icon(CupertinoIcons.chevron_forward),
-            ),
-            const Spacer(),
-            CupertinoButton(
-              onPressed: _addNewPage,
-              child: const Icon(CupertinoIcons.plus_square),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }

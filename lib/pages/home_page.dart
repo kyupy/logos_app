@@ -6,6 +6,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:logos_app/models/note_data.dart';
 import 'package:logos_app/pages/note_page.dart';
 import 'package:intl/intl.dart';
+import 'package:logos_app/pages/settings_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,6 +17,13 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final Box<NoteData> _notesBox = Hive.box<NoteData>('notes_box');
+
+  void _openSettings() {
+    Navigator.push(
+      context,
+      CupertinoPageRoute(builder: (context) => const SettingsPage()),
+    );
+  }
 
   void _createNewNote() {
     final firstPage = PageData(strokes: []);
@@ -115,8 +123,12 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
-      // ★★★ 省略されていたナビゲーションバーを補完 ★★★
       navigationBar: CupertinoNavigationBar(
+        leading: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: _openSettings,
+          child: const Icon(CupertinoIcons.settings),
+        ),
         middle: const Text('logos'),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,
@@ -125,7 +137,6 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
       child: SafeArea(
-        // ★★★ 省略されていたValueListenableBuilderの中身を補完 ★★★
         child: ValueListenableBuilder(
           valueListenable: _notesBox.listenable(),
           builder: (context, Box<NoteData> box, _) {
