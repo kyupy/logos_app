@@ -8,22 +8,23 @@ import 'package:logos_app/models/stroke.dart';
 import 'package:perfect_freehand/perfect_freehand.dart';
 
 class DrawingPainter extends CustomPainter {
-  final List<Stroke> strokes;
-  final Offset? eraserPosition;
+  final ValueNotifier<List<Stroke>> strokesNotifier;
+  final ValueNotifier<Offset?> eraserPositionNotifier;
 
-  DrawingPainter({required this.strokes, this.eraserPosition});
+  DrawingPainter({required this.strokesNotifier, required this.eraserPositionNotifier})
+      : super(repaint: Listenable.merge([strokesNotifier, eraserPositionNotifier]));
 
-  static const double kDefaultPenSize = 2.0;
-  static const double kDefaultEraserRadius = 8.0;
+  static const double kDefaultPenSize = 1.8;
+  static const double kDefaultEraserRadius = 5.0;
 
   void _paintRuledAndDots(Canvas canvas, Size size) {
     final linePaint = Paint()..color = Colors.grey.shade300..strokeWidth = 0.5;
+    // ★ ここで 'dotPaint' と定義
     final dotPaint = Paint()..color = Colors.grey.shade400..strokeWidth = 1.0..strokeCap = StrokeCap.round;
     const double mmToLogicalPixels = 3.78;
     const double lineSpacing = 6.0 * mmToLogicalPixels;
     const double dotSpacing = 6.0 * mmToLogicalPixels;
     const double topMargin = 10.0 * mmToLogicalPixels;
-
     for (double y = topMargin; y < size.height; y += lineSpacing) {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), linePaint);
     }
@@ -33,15 +34,17 @@ class DrawingPainter extends CustomPainter {
         pointsToDraw.add(Offset(x, y));
       }
     }
+    // ★★★ エラー箇所を 'dPaint' から 'dotPaint' に修正 ★★★
     canvas.drawPoints(PointMode.points, pointsToDraw, dotPaint);
   }
 
-  void _paintStrokes(Canvas canvas) {
-    final paint = Paint()..color = Colors.black..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round;
+  void _paintStrokes(Canvas canvas, List<Stroke> strokes) {
+    final paint = Paint()..color = Colors.black;
+
     final strokeOptions = StrokeOptions(
       size: kDefaultPenSize,
-      thinning: 0.65,
-      smoothing: 0.5,
+      thinning: 0,
+      smoothing: 0.65,
       streamline: 0.6,
       simulatePressure: false,
       start: StrokeEndOptions.start(taperEnabled: false, cap: true),
@@ -49,29 +52,30 @@ class DrawingPainter extends CustomPainter {
     );
 
     for (final stroke in strokes) {
-      if (stroke.points.length < 2) continue;
-      final strokeOutline = getStroke(stroke.points, options: strokeOptions);
-      final path = Path()..addPolygon(strokeOutline, false);
+      if (stroke.points.isEmpty) continue;
+      final outline = getStroke(stroke.points, options: strokeOptions);
+      if (outline.isEmpty) continue;
+      final path = Path()..addPolygon(outline, false);
       canvas.drawPath(path, paint);
     }
   }
 
-  void _paintEraserCursor(Canvas canvas) {
+  void _paintEraserCursor(Canvas canvas, Offset? eraserPosition) {
     if (eraserPosition == null) return;
     final paint = Paint()..color = Colors.grey.withOpacity(0.5)..style = PaintingStyle.fill;
-    canvas.drawCircle(eraserPosition!, kDefaultEraserRadius, paint);
+    canvas.drawCircle(eraserPosition, kDefaultEraserRadius, paint);
   }
 
   @override
   void paint(Canvas canvas, Size size) {
     _paintRuledAndDots(canvas, size);
-    _paintStrokes(canvas);
-    _paintEraserCursor(canvas);
+    _paintStrokes(canvas, strokesNotifier.value);
+    _paintEraserCursor(canvas, eraserPositionNotifier.value);
   }
 
   @override
   bool shouldRepaint(covariant DrawingPainter oldDelegate) {
-    return true;
+    return false;
   }
 }
 
@@ -80,7 +84,6 @@ class DrawingCanvas extends StatefulWidget {
   final Function(List<Stroke>) onStrokesUpdated;
   final List<Stroke> initialStrokes;
   final bool stylusOnlyDrawing;
-  // ★★★ 描画状態を親に通知するコールバック ★★★
   final Function(bool) onDrawingStateChanged;
 
   const DrawingCanvas({
@@ -97,25 +100,38 @@ class DrawingCanvas extends StatefulWidget {
 }
 
 class _DrawingCanvasState extends State<DrawingCanvas> {
+  late final ValueNotifier<List<Stroke>> _strokesNotifier;
+  final ValueNotifier<Offset?> _eraserPositionNotifier = ValueNotifier(null);
+
   late List<Stroke> _finishedStrokes;
   Stroke? _currentStroke;
-  Offset? _eraserPosition;
   
-  // ★★★ アクティブなポインターの数を管理する ★★★
   int _activePointerCount = 0;
+  
+  static const double kMinPointDistance = 0.4;
+  Offset? _lastAddedPoint;
 
   @override
   void initState() {
     super.initState();
     _finishedStrokes = List<Stroke>.from(widget.initialStrokes);
+    _strokesNotifier = ValueNotifier(_finishedStrokes);
   }
-
+  
   @override
   void didUpdateWidget(covariant DrawingCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.initialStrokes != oldWidget.initialStrokes) {
       _finishedStrokes = List<Stroke>.from(widget.initialStrokes);
+      _strokesNotifier.value = _finishedStrokes;
     }
+  }
+  
+  @override
+  void dispose() {
+    _strokesNotifier.dispose();
+    _eraserPositionNotifier.dispose();
+    super.dispose();
   }
 
   Point _mapOffsetToPoint(Offset offset) {
@@ -124,122 +140,114 @@ class _DrawingCanvasState extends State<DrawingCanvas> {
 
   void _handleErase(Offset currentPosition) {
     const double eraserRadius = DrawingPainter.kDefaultEraserRadius;
-    final List<Stroke> strokesToRemove = [];
-    for (final stroke in _finishedStrokes) {
+    bool needsUpdate = false;
+    _finishedStrokes.removeWhere((stroke) {
       for (final point in stroke.points) {
         final distance = (Offset(point.x, point.y) - currentPosition).distance;
         if (distance < eraserRadius) {
-          strokesToRemove.add(stroke);
-          break;
+          needsUpdate = true;
+          return true;
         }
       }
-    }
-    if (strokesToRemove.isNotEmpty) {
-      _finishedStrokes.removeWhere((stroke) => strokesToRemove.contains(stroke));
-      widget.onStrokesUpdated(List<Stroke>.from(_finishedStrokes));
+      return false;
+    });
+
+    if (needsUpdate) {
+        widget.onStrokesUpdated(List<Stroke>.from(_finishedStrokes));
+        _strokesNotifier.value = List<Stroke>.from(_finishedStrokes);
     }
   }
   
-  void _startDrawing(Offset localPosition, PointerDeviceKind kind) {
-    // 描画を開始する条件
-    final bool isStylus = kind == PointerDeviceKind.stylus;
-    final bool canDrawWithTouch = !widget.stylusOnlyDrawing && kind == PointerDeviceKind.touch;
-
-    if (isStylus || canDrawWithTouch) {
-      // 親ウィジェットに描画が開始したことを通知
-      widget.onDrawingStateChanged(true);
-      switch (widget.currentTool) {
-        case DrawingTool.pen:
-          final points = [_mapOffsetToPoint(localPosition)];
-          setState(() => _currentStroke = Stroke(points));
-          break;
-        case DrawingTool.eraser:
-          setState(() => _eraserPosition = localPosition);
-          _handleErase(localPosition);
-          break;
-      }
-    }
-  }
-
-  void _updateDrawing(Offset localPosition) {
+  void _startDrawing(PointerDownEvent details) {
+    widget.onDrawingStateChanged(true);
+    final point = details.localPosition;
+    
     switch (widget.currentTool) {
       case DrawingTool.pen:
-        if (_currentStroke == null) return;
-        final points = List<Point>.from(_currentStroke!.points)
-          ..add(_mapOffsetToPoint(localPosition));
-        setState(() => _currentStroke = Stroke(points));
+        _currentStroke = Stroke([_mapOffsetToPoint(point)]);
+        _strokesNotifier.value = [..._finishedStrokes, _currentStroke!];
+        _lastAddedPoint = point;
         break;
       case DrawingTool.eraser:
-        setState(() => _eraserPosition = localPosition);
-        _handleErase(localPosition);
+        _eraserPositionNotifier.value = point;
+        _handleErase(point);
+        break;
+    }
+  }
+  
+  void _updateDrawing(PointerMoveEvent details) {
+    final point = details.localPosition;
+
+    switch (widget.currentTool) {
+      case DrawingTool.pen:
+        if (_currentStroke == null || _lastAddedPoint == null) return;
+
+        final distance = (point - _lastAddedPoint!).distance;
+        
+        if (distance < kMinPointDistance) {
+          return;
+        }
+
+        _currentStroke!.points.add(_mapOffsetToPoint(point));
+        _lastAddedPoint = point;
+
+        _strokesNotifier.value = [..._finishedStrokes, _currentStroke!];
+        break;
+        
+      case DrawingTool.eraser:
+        _eraserPositionNotifier.value = point;
+        _handleErase(point);
         break;
     }
   }
 
   void _endDrawing() {
-    // 親ウィジェットに描画が終了したことを通知
     widget.onDrawingStateChanged(false);
-    switch (widget.currentTool) {
-      case DrawingTool.pen:
-         if (_currentStroke != null) {
-          _finishedStrokes.add(_currentStroke!);
-          widget.onStrokesUpdated(List<Stroke>.from(_finishedStrokes));
-        }
-        break;
-      case DrawingTool.eraser:
-        // 何もする必要なし
-        break;
-    }
-    setState(() {
-      _currentStroke = null;
-      _eraserPosition = null;
-    });
-  }
 
+    if (widget.currentTool == DrawingTool.pen && _currentStroke != null) {
+      _finishedStrokes.add(_currentStroke!);
+      widget.onStrokesUpdated(List<Stroke>.from(_finishedStrokes));
+    }
+    
+    _currentStroke = null;
+    _eraserPositionNotifier.value = null;
+    _lastAddedPoint = null;
+  }
 
   @override
   Widget build(BuildContext context) {
     return Listener(
       onPointerDown: (details) {
+        final kind = details.kind;
+        final bool isStylus = kind == PointerDeviceKind.stylus;
+        final bool canDrawWithTouch = !widget.stylusOnlyDrawing && kind == PointerDeviceKind.touch;
+        
         _activePointerCount++;
-        // 2本指以上が触れたら、移動・拡大モードに移行するため描画をキャンセル
         if (_activePointerCount > 1) {
-          if (_currentStroke != null || _eraserPosition != null) {
-            _endDrawing();
-          }
+          if (_currentStroke != null || _eraserPositionNotifier.value != null) _endDrawing();
           return;
         }
-        // 指が1本の時のみ描画を開始する
-        _startDrawing(details.localPosition, details.kind);
+        if (isStylus || canDrawWithTouch) {
+          _startDrawing(details);
+        }
       },
       onPointerMove: (details) {
-        // 描画中で、かつ指が1本だけの時のみ更新
-        if ((_currentStroke != null || _eraserPosition != null) && _activePointerCount == 1) {
-          _updateDrawing(details.localPosition);
+        if ((_currentStroke != null || _eraserPositionNotifier.value != null) && _activePointerCount == 1) {
+          _updateDrawing(details);
         }
       },
       onPointerUp: (details) {
-        if (_activePointerCount > 0) {
-            _activePointerCount--;
-        }
-        // 描画中であった場合は終了処理
-        if (_currentStroke != null || _eraserPosition != null) {
-            _endDrawing();
-        }
+        if (_activePointerCount > 0) _activePointerCount--;
+        if (_currentStroke != null || _eraserPositionNotifier.value != null) _endDrawing();
       },
       onPointerCancel: (details) {
-        if (_activePointerCount > 0) {
-            _activePointerCount--;
-        }
-        // 描画中であった場合は終了処理
-        if (_currentStroke != null || _eraserPosition != null) {
-            _endDrawing();
-        }
+        if (_activePointerCount > 0) _activePointerCount--;
+        if (_currentStroke != null || _eraserPositionNotifier.value != null) _endDrawing();
       },
       child: CustomPaint(
         painter: DrawingPainter(
-          strokes: [..._finishedStrokes, if (_currentStroke != null) _currentStroke!],
-          eraserPosition: _eraserPosition,
+          strokesNotifier: _strokesNotifier,
+          eraserPositionNotifier: _eraserPositionNotifier,
         ),
         size: Size.infinite,
       ),

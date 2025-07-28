@@ -185,7 +185,7 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
             ),
             CupertinoButton(
               padding: const EdgeInsets.all(8.0),
-              child: Icon(const IconData(0xf39a, fontFamily: 'CupertinoIcons'), size: 24, color: _currentTool == DrawingTool.eraser ? CupertinoColors.activeBlue : CupertinoColors.secondaryLabel),
+              child: Icon(CupertinoIcons.square_fill, size: 22, color: _currentTool == DrawingTool.eraser ? CupertinoColors.activeBlue : CupertinoColors.secondaryLabel),
               onPressed: () => setState(() => _currentTool = DrawingTool.eraser),
             ),
           ],
