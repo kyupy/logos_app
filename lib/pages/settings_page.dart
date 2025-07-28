@@ -1,5 +1,3 @@
-// lib/pages/settings_page.dart
-
 import 'package:flutter/cupertino.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 

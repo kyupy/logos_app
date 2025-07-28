@@ -1,5 +1,3 @@
-// lib/models/note_data.dart
-
 import 'package:hive/hive.dart';
 
 part 'note_data.g.dart';
@@ -49,14 +47,13 @@ class StrokeData extends HiveObject {
   StrokeData({required this.points});
 }
 
-// NotePointDataクラス (変更なし)
+// NotePointDataクラス (★ pressureフィールドを削除)
 @HiveType(typeId: 2)
 class NotePointData extends HiveObject {
   @HiveField(0)
   double? x;
   @HiveField(1)
   double? y;
-  @HiveField(2)
-  double? pressure;
-  NotePointData({this.x, this.y, this.pressure});
+
+  NotePointData({this.x, this.y});
 }

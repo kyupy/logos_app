@@ -130,20 +130,17 @@ class NotePointDataAdapter extends TypeAdapter<NotePointData> {
     return NotePointData(
       x: fields[0] as double?,
       y: fields[1] as double?,
-      pressure: fields[2] as double?,
     );
   }
 
   @override
   void write(BinaryWriter writer, NotePointData obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(2)
       ..writeByte(0)
       ..write(obj.x)
       ..writeByte(1)
-      ..write(obj.y)
-      ..writeByte(2)
-      ..write(obj.pressure);
+      ..write(obj.y);
   }
 
   @override

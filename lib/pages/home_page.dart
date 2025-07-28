@@ -1,19 +1,12 @@
-// lib/pages/home_page.dart
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
 
-// ★ flutter_slidableをインポート
-import 'package:flutter_slidable/flutter_slidable.dart';
-
 // 自身のプロジェクトのパスに合わせてください
 import 'package:logos_app/models/note_data.dart';
 import 'package:logos_app/pages/note_page.dart';
 import 'package:logos_app/pages/settings_page.dart';
-
-// ★ custom_slidable.dartのインポートは不要なので削除
 import 'package:logos_app/widgets/my_custom_list_tile.dart';
 
 class HomePage extends StatefulWidget {
@@ -30,9 +23,6 @@ class _HomePageState extends State<HomePage> {
   bool _isCreatingNewNote = false;
   final TextEditingController _textController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-
-  // ★ 自作ウィジェット用の状態管理だったので、不要になり削除
-  // Key? _openedSlidableKey;
 
   @override
   void dispose() {
@@ -52,14 +42,12 @@ class _HomePageState extends State<HomePage> {
     if (_editingNoteKey != null || _isCreatingNewNote) return;
     Navigator.push(
       context,
-      CupertinoPageRoute(
-        builder: (context) => NotePage(noteKey: key),
-      ),
+      CupertinoPageRoute(builder: (context) => NotePage(noteKey: key)),
     );
   }
 
-  Future<void> _deleteNote(BuildContext context, int key) async {
-    showCupertinoDialog(
+  Future<bool?> _showDeleteConfirmationDialog(BuildContext context) async {
+    return showCupertinoDialog<bool>(
       context: context,
       builder: (BuildContext dialogContext) {
         return CupertinoAlertDialog(
@@ -68,25 +56,18 @@ class _HomePageState extends State<HomePage> {
           actions: <CupertinoDialogAction>[
             CupertinoDialogAction(
               child: const Text('キャンセル'),
-              onPressed: () => Navigator.pop(dialogContext),
+              onPressed: () => Navigator.pop(dialogContext, false),
             ),
             CupertinoDialogAction(
               isDestructiveAction: true,
               child: const Text('削除'),
-              onPressed: () {
-                _notesBox.delete(key);
-                Navigator.pop(dialogContext);
-              },
+              onPressed: () => Navigator.pop(dialogContext, true),
             ),
           ],
         );
       },
     );
   }
-
-  // ★ 自作ウィジェット用のメソッドだったので、不要になり削除
-  // void _handleSlidableOpen(Key key) { ... }
-  // void _closeOpenedSlidable() { ... }
 
   void _startCreating() {
     if (_editingNoteKey != null || _isCreatingNewNote) return;
@@ -106,8 +87,10 @@ class _HomePageState extends State<HomePage> {
       _textController.text = note.title ?? '';
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _focusNode.requestFocus();
-        _textController.selection =
-            TextSelection(baseOffset: 0, extentOffset: _textController.text.length);
+        _textController.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: _textController.text.length,
+        );
       });
     });
   }
@@ -163,7 +146,6 @@ class _HomePageState extends State<HomePage> {
       child: SafeArea(
         child: GestureDetector(
           onTap: () {
-            // ★ スライドを閉じるロジックは不要になり、編集中の処理のみに
             if (_editingNoteKey != null || _isCreatingNewNote) {
               _submitEditing();
             }
@@ -171,54 +153,49 @@ class _HomePageState extends State<HomePage> {
           child: ValueListenableBuilder(
             valueListenable: _notesBox.listenable(),
             builder: (context, Box<NoteData> box, _) {
-              final notes = box.values.toList().reversed.toList();
-              final noteKeys = box.keys.toList().reversed.toList();
+              final noteCount = box.length;
 
-              if (notes.isEmpty && !_isCreatingNewNote) {
+              if (noteCount == 0 && !_isCreatingNewNote) {
                 return const Center(child: Text("ノートがありません"));
               }
 
               return ListView.builder(
                 physics: const BouncingScrollPhysics(),
-                itemCount: notes.length + (_isCreatingNewNote ? 1 : 0),
+                itemCount: noteCount + (_isCreatingNewNote ? 1 : 0),
                 itemBuilder: (context, index) {
                   if (_isCreatingNewNote && index == 0) {
                     return _buildEditingTile(isCreating: true);
                   }
 
-                  final noteIndex = _isCreatingNewNote ? index - 1 : index;
-                  final note = notes[noteIndex];
-                  final key = noteKeys[noteIndex] as int;
+                  // ★★★ パフォーマンス改善: toList().reversedを避け、インデックスで直接アクセス ★★★
+                  final noteIndexInBox = noteCount - 1 - (_isCreatingNewNote ? index - 1 : index);
+                  final key = box.keyAt(noteIndexInBox) as int;
+                  final note = box.getAt(noteIndexInBox)!;
+                  
                   final isEditingThisNote = _editingNoteKey == key;
 
                   if (isEditingThisNote) {
                     return _buildEditingTile(isCreating: false);
                   }
 
-                  // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                  // ★ ここをflutter_slidableのSlidableウィジェットに置き換え ★
-                  // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-                  return Slidable(
+                  return Dismissible(
                     key: ValueKey(key),
-                    closeOnScroll: false,
-                    groupTag: 'notes-list',
-                    endActionPane: ActionPane(
-                      // iOS純正メモアプリ風の動き
-                      motion: const BehindMotion(),
-                      // ボタン幅の40%までスワイプしたら、開いたままにする
-                      openThreshold: 0.30,
-                      // ボタンの表示領域
-                      extentRatio: 0.20,
-                      children: [
-                        SlidableAction(
-                          onPressed: (context) => _deleteNote(context, key),
-                          backgroundColor: CupertinoColors.destructiveRed,
-                          foregroundColor: Colors.white,
-                          icon: CupertinoIcons.delete,
-                          label: '削除',
-                        ),
-                      ],
+                    direction: DismissDirection.endToStart,
+                    background: Container(
+                      color: CupertinoColors.destructiveRed,
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      alignment: Alignment.centerRight,
+                      child: const Icon(
+                        CupertinoIcons.delete,
+                        color: Colors.white,
+                      ),
                     ),
+                    confirmDismiss: (direction) async {
+                      return await _showDeleteConfirmationDialog(context);
+                    },
+                    onDismissed: (direction) {
+                        _notesBox.delete(key);
+                    },
                     child: _buildDisplayTile(key, note),
                   );
                 },
@@ -240,7 +217,6 @@ class _HomePageState extends State<HomePage> {
         '${DateFormat('yyyy/MM/dd HH:mm').format(note.createdAt)}  ${note.pages.length}ページ',
       ),
       onTitleTap: () => _startEditing(key, note),
-      // ★ スライドを閉じるロジックが不要になったため、シンプルに
       onTap: () => _openNote(key, note),
     );
   }
@@ -256,14 +232,19 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: Container(
               decoration: BoxDecoration(
-                color: CupertinoTheme.of(context).primaryColor.withOpacity(0.12),
+                color: CupertinoTheme.of(
+                  context,
+                ).primaryColor.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: CupertinoTextField.borderless(
                 controller: _textController,
                 focusNode: _focusNode,
                 placeholder: 'ノートのタイトル',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 17,
+                ),
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 onSubmitted: (_) => _submitEditing(),
               ),
@@ -278,7 +259,10 @@ class _HomePageState extends State<HomePage> {
           if (isCreating)
             CupertinoButton(
               padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: const Text('やめる', style: TextStyle(color: CupertinoColors.systemGrey)),
+              child: const Text(
+                'やめる',
+                style: TextStyle(color: CupertinoColors.systemGrey),
+              ),
               onPressed: _cancelEditing,
             ),
         ],

@@ -1,5 +1,3 @@
-// lib/pages/note_page.dart
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -7,7 +5,6 @@ import 'package:logos_app/models/drawing_tool.dart';
 import 'package:logos_app/models/note_data.dart';
 import 'package:logos_app/models/stroke.dart';
 import 'package:logos_app/widgets/drawing_canvas.dart';
-import 'package:perfect_freehand/perfect_freehand.dart' as freehand;
 
 class NotePage extends StatefulWidget {
   final int noteKey;
@@ -34,6 +31,13 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
 
   late AnimationController _animationController;
   Animation<Matrix4>? _animation;
+  
+  // ★★★ パフォーマンス改善: ストロークデータのキャッシュ ★★★
+  final Map<int, List<Stroke>> _cachedStrokes = {};
+
+  // ★★★ 定数をクラスレベルに移動 ★★★
+  static const double kPaperWidth = 600.0;
+  static const double kPaperHeight = kPaperWidth * 1.414;
 
   @override
   void initState() {
@@ -139,16 +143,38 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
   
   List<StrokeData> _convertStrokesToStrokeData(List<Stroke> strokes) {
     return strokes.map((stroke) {
-      final points = stroke.points.map((point) => NotePointData(x: point.x, y: point.y, pressure: point.pressure)).toList();
+      final points = stroke.points.map((point) => NotePointData(x: point.dx, y: point.dy)).toList();
       return StrokeData(points: points);
     }).toList();
   }
 
   List<Stroke> _convertPageDataToStrokes(PageData pageData) {
     return pageData.strokes.map((strokeData) {
-      final points = strokeData.points.map((pointData) => freehand.Point(pointData.x ?? 0, pointData.y ?? 0, pointData.pressure ?? 0.5)).toList();
+      final points = strokeData.points.map((pointData) => Offset(pointData.x ?? 0, pointData.y ?? 0)).toList();
       return Stroke(points);
     }).toList();
+  }
+
+  // ★★★ パフォーマンス改善: キャッシュを利用してストロークを取得するメソッド ★★★
+  List<Stroke> _getStrokesForPage(int index) {
+    if (_cachedStrokes.containsKey(index)) {
+      return _cachedStrokes[index]!;
+    }
+    final pageData = _currentNote!.pages[index];
+    final strokes = _convertPageDataToStrokes(pageData);
+    _cachedStrokes[index] = strokes;
+    return strokes;
+  }
+
+  // ★★★ パフォーマンス改善: ストロークとキャッシュを更新するメソッド ★★★
+  void _updateStrokes(int pageIndex, List<Stroke> updatedStrokes) {
+    if (_currentNote == null || pageIndex >= _currentNote!.pages.length) return;
+    
+    _currentNote!.pages[pageIndex].strokes = _convertStrokesToStrokeData(updatedStrokes);
+    _cachedStrokes[pageIndex] = updatedStrokes; // キャッシュを更新
+    _saveNote();
+    // ここでのsetStateは不要な場合が多いが、念のため残す
+    if (mounted) setState(() {});
   }
 
 
@@ -191,10 +217,12 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
           ],
         ),
       ),
-      // ★★★ 必須引数であるchildに戻す ★★★
       child: PageView.builder(
         controller: _pageController,
-        physics: _isDrawingOnCanvas ? const NeverScrollableScrollPhysics() : const AlwaysScrollableScrollPhysics(),
+        // ★★★ UI改善: スクロール物理演算をClampingに変更 ★★★
+        physics: _isDrawingOnCanvas 
+            ? const NeverScrollableScrollPhysics() 
+            : const ClampingScrollPhysics(),
         itemCount: _currentNote!.pages.length + 1,
         onPageChanged: (index) {
           if (index == _currentNote!.pages.length) {
@@ -208,7 +236,7 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
         },
         itemBuilder: (context, index) {
           if (index == _currentNote!.pages.length) {
-             return const Center(
+              return const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -220,9 +248,6 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
             );
           }
           
-          const double paperWidth = 600.0;
-          const double paperHeight = paperWidth * 1.414;
-
           return InteractiveViewer(
             transformationController: _transformationController,
             boundaryMargin: const EdgeInsets.all(double.infinity),
@@ -234,8 +259,8 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
             child: FittedBox(
               fit: BoxFit.contain,
               child: SizedBox(
-                width: paperWidth,
-                height: paperHeight,
+                width: kPaperWidth,
+                height: kPaperHeight,
                 child: Container(
                   clipBehavior: Clip.hardEdge,
                   decoration: BoxDecoration(
@@ -251,12 +276,11 @@ class _NotePageState extends State<NotePage> with SingleTickerProviderStateMixin
                   child: DrawingCanvas(
                     currentTool: _currentTool,
                     stylusOnlyDrawing: _stylusOnlyDrawing,
-                    initialStrokes: _convertPageDataToStrokes(_currentNote!.pages[index]),
+                    // ★★★ パフォーマンス改善: キャッシュされたストロークを使用 ★★★
+                    initialStrokes: _getStrokesForPage(index),
                     onStrokesUpdated: (updatedStrokes) {
-                      if (_currentNote == null || index >= _currentNote!.pages.length) return;
-                      _currentNote!.pages[index].strokes = _convertStrokesToStrokeData(updatedStrokes);
-                      _saveNote();
-                      if (mounted) setState(() {});
+                      // ★★★ パフォーマンス改善: 新しい更新メソッドを呼び出す ★★★
+                      _updateStrokes(index, updatedStrokes);
                     },
                     onDrawingStateChanged: (isDrawing) {
                       if (_isDrawingOnCanvas != isDrawing) {

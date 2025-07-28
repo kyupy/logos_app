@@ -1,9 +1,6 @@
-// lib/widgets/my_custom_list_tile.dart
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-// ★★★ クラス名を MyCustomListTile に変更 ★★★
 class MyCustomListTile extends StatelessWidget {
   final Widget title;
   final Widget subtitle;
